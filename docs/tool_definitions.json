@@ -1,0 +1,120 @@
+{
+  "tools": [
+    {
+      "name": "verify_customer",
+      "description": "Verify the customer's identity before accessing account-specific information.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "customer_reference": {
+            "type": "string",
+            "description": "Customer reference normalized to canonical format such as CUS-1001."
+          },
+          "verification_value": {
+            "type": "string",
+            "description": "Verification number normalized by removing spaces, dots, and speech-recognition artifacts."
+          }
+        },
+        "required": [
+          "customer_reference",
+          "verification_value"
+        ]
+      }
+    },
+    {
+      "name": "get_account_details",
+      "description": "Retrieve account details after successful customer verification.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "customer_reference": {
+            "type": "string",
+            "description": "Verified customer reference."
+          }
+        },
+        "required": [
+          "customer_reference"
+        ]
+      }
+    },
+    {
+      "name": "log_promise_to_pay",
+      "description": "Record a customer's agreed promise-to-pay amount and payment date.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "customer_reference": {
+            "type": "string",
+            "description": "Verified customer reference."
+          },
+          "amount": {
+            "type": "integer",
+            "description": "Amount the customer commits to pay."
+          },
+          "payment_date": {
+            "type": "string",
+            "description": "Promised payment date."
+          }
+        },
+        "required": [
+          "customer_reference",
+          "amount",
+          "payment_date"
+        ]
+      }
+    },
+    {
+      "name": "send_payment_link",
+      "description": "Generate/send a payment link after successful customer verification.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "customer_reference": {
+            "type": "string",
+            "description": "Verified customer reference."
+          },
+          "amount": {
+            "type": "integer",
+            "description": "Payment amount for the generated payment link."
+          }
+        },
+        "required": [
+          "customer_reference",
+          "amount"
+        ]
+      }
+    },
+    {
+      "name": "escalate_to_agent",
+      "description": "Escalate the conversation to a human agent when the issue cannot be resolved by Maya.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Reason for human-agent escalation."
+          }
+        },
+        "required": [
+          "reason"
+        ]
+      }
+    },
+    {
+      "name": "mark_disposition",
+      "description": "Record the final disposition of the customer interaction.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "disposition": {
+            "type": "string",
+            "description": "Final outcome or disposition of the call."
+          }
+        },
+        "required": [
+          "disposition"
+        ]
+      }
+    }
+  ]
+}
