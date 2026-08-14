@@ -55,6 +55,7 @@ Verification         Logging
           Service
 ```
 ##Project Structure
+```
 kapture-maya/
 │
 ├── backend/
@@ -77,7 +78,6 @@ kapture-maya/
 │
 └── README.md
 ```
-````
 Backend
 
 The backend provides APIs and business logic required by the Maya assistant.
