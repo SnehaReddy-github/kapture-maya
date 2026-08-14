@@ -1,0 +1,14 @@
+Customer
+   ↓
+Telephony
+   ↓
+Vapi
+   ↓
+Maya AI Agent
+   ↓
+STT / LLM / TTS
+   ↓
+Backend API
+   ├── verify_customer
+   ├── log_promise_to_pay
+   └── send_payment_link
