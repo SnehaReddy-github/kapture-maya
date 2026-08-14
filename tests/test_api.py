@@ -99,6 +99,24 @@ def test_unknown_customer(client):
 # ============================================================
 
 def test_promise_to_pay(client):
+
+    # Customer must be verified before financial action
+    verify_response = client.post(
+        "/verify-customer",
+        json={
+            "customer_reference": "CUS-1001",
+            "verification_value": "1001"
+        }
+    )
+
+    assert verify_response.status_code == 200
+
+    verify_data = verify_response.get_json()
+
+    assert verify_data["success"] is True
+    assert verify_data["verified"] is True
+
+    # Now create Promise-to-Pay
     response = client.post(
         "/log-promise-to-pay",
         json={
@@ -112,6 +130,7 @@ def test_promise_to_pay(client):
 
     data = response.get_json()
 
+    assert data["success"] is True
     assert data["ptp"] is not None
     assert data["ptp"]["amount"] == 8499
     assert data["ptp"]["customer_reference"] == "CUS-1001"
@@ -124,6 +143,24 @@ def test_promise_to_pay(client):
 # ============================================================
 
 def test_payment_link(client):
+
+    # Customer must be verified before payment action
+    verify_response = client.post(
+        "/verify-customer",
+        json={
+            "customer_reference": "CUS-1001",
+            "verification_value": "1001"
+        }
+    )
+
+    assert verify_response.status_code == 200
+
+    verify_data = verify_response.get_json()
+
+    assert verify_data["success"] is True
+    assert verify_data["verified"] is True
+
+    # Generate payment link
     response = client.post(
         "/send-payment-link",
         json={
@@ -180,4 +217,7 @@ def test_disposition(client):
 
     data = response.get_json()
 
+    assert data["success"] is True
     assert data["disposition"] is not None
+    assert data["disposition"]["customer_reference"] == "CUS-1001"
+    assert data["disposition"]["disposition"] == "PTP"
