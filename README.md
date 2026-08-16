@@ -1,159 +1,222 @@
-# Capture Finance – Maya Outbound Collections Voicebot
+# Kapture Finance — Maya Collections Voicebot
 
-Maya is an outbound collections voice assistant developed for Capture Finance.
+## 1. Project Overview
 
-The assistant is designed to contact customers regarding overdue loan EMIs, verify customer identity, understand payment situations, obtain payment commitments, and support payment-link delivery.
+Maya is an outbound collections voice assistant designed for Kapture Finance.
 
-## Project Overview
+The assistant contacts customers regarding overdue loan EMIs and follows a secure, state-driven conversation flow. Before discussing any protected account information, Maya verifies the customer's identity using a backend verification tool.
 
-- **Assistant:** Maya
-- **Use Case:** Outbound loan collections
-- **Platform:** Vapi
-- **Backend:** Python / Flask
-- **Communication:** Voice
-- **Status:** Implemented and tested
+The system supports:
 
-## Key Features
-
-- Outbound customer calling
 - Customer identity verification
-- Overdue loan account handling
-- Structured collections conversation
-- Promise-to-pay recording
-- Payment-link delivery support
-- SMS / WhatsApp communication support
-- Backend API integration
-- Tool-call validation
-- Automated testing
-- Call and tool execution logging
+- Secure account disclosure
+- Payment intent detection
+- Promise-to-pay (PTP) collection
+- Payment-link requests
+- Already-paid handling
+- Payment disputes
+- Financial hardship handling
+- Human-agent escalation
+- Do-not-call requests
+- Callback requests
+- Call disposition recording
 
-## System Architecture
+---
+
+## 2. System Architecture
+
+The high-level voice pipeline is:
+
+Customer
+→ Vapi Telephony
+→ Speech-to-Text
+→ Maya Orchestrator / LLM
+→ Text-to-Speech
+→ Customer
+
+The LLM can call backend tools through the Vapi tool webhook.
+
+Backend flow:
+
+Vapi
+→ HTTPS ngrok endpoint
+→ Flask API
+→ Mock customer/account data
+→ Tool result
+→ Vapi / Maya
+
+The backend currently uses mock in-memory data for the assignment prototype.
+
+---
+
+## 3. Technology Stack
+
+### Voice Platform
+
+Vapi
+
+### Speech-to-Text
+
+Soniox STT RT v5
+
+### Language Model
+
+OpenAI GPT-4.1
+
+### Text-to-Speech
+
+Vapi Elliot v2
+
+### Backend
+
+Python + Flask
+
+### Testing
+
+Pytest
+
+### Development
+
+PowerShell, VS Code and ngrok
+
+---
+
+## 4. Vapi Configuration
+
+The assistant was configured with:
+
+- Model: GPT-4.1
+- Voice: Vapi Elliot v2
+- Transcriber: Soniox STT RT v5
+- Backend tool server: Flask API exposed through ngrok
+
+The model was selected for reliable instruction following and tool-use behaviour.
+
+Soniox STT was selected for real-time speech recognition.
+
+Elliot was selected as the voice layer for a natural and concise collections conversation.
+
+---
+
+## 5. Conversation State Machine
+
+Maya follows a state-driven conversation model.
+
+### State 1 — OPENING
+
+Maya identifies herself and asks whether she is speaking with the intended customer.
+
+No loan or overdue information is disclosed.
+
+### State 2 — AUTHENTICATION
+
+After the customer confirms their identity, Maya requests the customer reference number and calls:
+
+`verify_customer`
+
+Protected account information remains unavailable while verification is pending.
+
+### State 3 — VERIFIED
+
+The conversation can proceed to account discussion only when:
+
+`verified = true`
+
+### State 4 — ACCOUNT DISCUSSION
+
+After successful authentication, Maya can disclose the permitted account information and determine the customer's intent.
+
+### State 5 — INTENT HANDLING
+
+Supported intents include:
+
+- WILL_PAY
+- CANNOT_PAY / HARDSHIP
+- DISPUTE
+- ALREADY_PAID
+- WRONG_PERSON
+- DO_NOT_CALL
+- CALLBACK_REQUEST
+- HOSTILE / ABUSIVE
+
+### State 6 — PAYMENT COMMITMENT
+
+A Promise-to-Pay is valid only after:
+
+1. Customer identity is verified.
+2. Customer agrees to pay.
+3. Payment amount is known.
+4. Payment date is known.
+5. Customer confirms the commitment.
+
+Maya then calls:
+
+`log_promise_to_pay`
+
+### State 7 — PAYMENT LINK
+
+A payment link can only be generated for an authenticated customer.
+
+Maya calls:
+
+`send_payment_link`
+
+when appropriate.
+
+### State 8 — ESCALATION
+
+Human escalation is used for cases such as:
+
+- Disputes
+- Financial hardship
+- Explicit request for a human representative
+- Complex cases that Maya should not resolve
+
+### State 9 — CLOSING
+
+Maya records the appropriate disposition and ends the call politely.
+
+---
+
+## 6. Security and Authentication
+
+The main security principle is:
+
+> No account information should be disclosed until customer identity has been successfully verified.
+
+Protected information includes:
+
+- Loan type
+- Overdue amount
+- Payment status
+- Days past due
+- Collection reason
+
+The `verify_customer` tool is used to authenticate the customer.
+
+A successful response must contain:
+
+`verified = true`
+
+Only then can Maya discuss protected account information.
+
+If verification fails, Maya allows one retry. If verification fails again, Maya does not disclose account information and ends the account discussion.
+
+The backend also contains authorization checks for sensitive operations so that security does not depend only on the LLM prompt.
+
+---
+
+## 7. Tools / API
+
+The backend exposes the following endpoints:
 
 ```text
-Customer
-   |
-   v
-Vapi Platform
-   |
-   v
-Maya Voice Assistant
-   |
-   | Tool Calls
-   v
-Backend API
-   |
-   +-------------------+
-   |                   |
-   v                   v
-Customer          Promise-to-Pay
-Verification         Logging
-   |                   |
-   +---------+---------+
-             |
-             v
-       Payment Link
-          Service
-```
-##Project Structure
-```
-kapture-maya/
-│
-├── backend/
-│   ├── api_server.py
-│   ├── main.py
-│   ├── maya_orchestrator.py
-│   ├── server.py
-│   ├── state_machine.py
-│   └── tools.py
-│
-├── tests/
-│   ├── test_api.py
-│   ├── test_orchestrator.py
-│   ├── test_security.py
-│   └── test_state_machine.py
-│
-├── docs/
-│   ├── HLD_Document.md
-│   └── System_Architecture.png
-│
-└── README.md
-```
-Backend
-
-The backend provides APIs and business logic required by the Maya assistant.
-
-Major backend responsibilities include:
-
-Customer verification
-Account information retrieval
-Promise-to-pay handling
-Payment-link processing
-Conversation state management
-Tool-call processing
-Customer Verification
-
-Sensitive account information is protected through customer verification.
-
-The verification flow checks the customer reference and verification value before returning account information.
-````
-Conversation Flow
-Call Customer
-      |
-      v
-Introduce Maya
-      |
-      v
-Verify Customer
-      |
-      +---- Failed ----> Do Not Reveal Account Information
-      |
-      v
-Understand Payment Situation
-      |
-      v
-Discuss Payment Commitment
-      |
-      v
-Record Promise-to-Pay
-      |
-      v
-Send Payment Link
-      |
-      v
-Close Conversation
-````
-Testing
-
-The project includes automated tests covering:
-
-API functionality
-State-machine behavior
-Orchestrator behavior
-Security and verification logic
-
-The backend API was also tested using tool-call requests and successful HTTP responses.
-
-Vapi Integration
-
-Maya is configured as a Vapi voice assistant with tools connected to the backend API.
-
-The assistant handles the conversational layer while the backend handles business logic and customer/account operations.
-
-Documentation
-
-The detailed High-Level Design is available in:
-
-docs/HLD_Document.md
-
-The system architecture diagram is available in:
-
-docs/System_Architecture.png
-Security Considerations
-
-The system follows basic security principles for collections conversations:
-
-Verify customer identity before exposing account information.
-Do not disclose sensitive account details to unverified callers.
-Keep business logic in backend tools.
-Validate tool inputs.
-Log important tool executions and results.
+GET  /
+POST /verify-customer
+POST /get-account-details
+POST /log-promise-to-pay
+POST /send-payment-link
+POST /escalate-to-agent
+POST /mark-disposition
+POST /vapi/tools
+GET  /debug/data

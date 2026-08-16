@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from datetime import datetime, timezone
+import json
 
 app = Flask(__name__)
 
@@ -18,6 +19,7 @@ CUSTOMERS = {
         "status": "OVERDUE",
         "already_paid": False,
         "do_not_call": False,
+        "verified": False,
     },
 
     "CUS-PAID-001": {
@@ -29,6 +31,7 @@ CUSTOMERS = {
         "status": "PAID",
         "already_paid": True,
         "do_not_call": False,
+        "verified": False,
     },
 
     "CUS-DNC-001": {
@@ -40,6 +43,7 @@ CUSTOMERS = {
         "status": "OVERDUE",
         "already_paid": False,
         "do_not_call": True,
+        "verified": False,
     },
 }
 
@@ -55,15 +59,89 @@ ESCALATIONS = []
 
 
 # ============================================================
-# HELPER
+# HELPER FUNCTIONS
 # ============================================================
 
 def utc_now():
-    """
-    Return timezone-aware UTC timestamp.
-    Avoids deprecated datetime.utcnow().
-    """
+    """Return timezone-aware UTC timestamp."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def is_verified(customer):
+    """Check whether the customer has been successfully verified."""
+    return customer.get("verified", False)
+
+
+def authentication_required():
+    """Standard response when verification has not occurred."""
+    return jsonify({
+        "success": False,
+        "error": "AUTHENTICATION_REQUIRED",
+        "reason": "CUSTOMER_NOT_VERIFIED",
+        "message": (
+            "Customer identity must be successfully verified "
+            "before account information or payment actions "
+            "can be accessed."
+        ),
+    }), 403
+
+
+def normalize_amount(value):
+    """
+    Convert common spoken/string money formats into an integer.
+
+    Examples:
+        8499             -> 8499
+        "8499"           -> 8499
+        "8,499"          -> 8499
+        "₹8,499"         -> 8499
+        "$8,499"         -> 8499
+        "8499 rupees"    -> 8499
+        "8499.00"        -> 8499
+    """
+
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return None
+
+    try:
+        if isinstance(value, (int, float)):
+            return int(value)
+
+        value = str(value).strip()
+
+        value = (
+            value
+            .replace(",", "")
+            .replace("₹", "")
+            .replace("$", "")
+            .replace("INR", "")
+            .replace("inr", "")
+            .replace("rupees", "")
+            .replace("Rupees", "")
+            .replace("RUPEES", "")
+            .strip()
+        )
+
+        return int(float(value))
+
+    except (ValueError, TypeError):
+        return None
+
+
+def extract_parameter(parameters, *names):
+    """
+    Return the first available parameter from a list
+    of possible parameter names.
+    """
+
+    for name in names:
+        if name in parameters and parameters[name] is not None:
+            return parameters[name]
+
+    return None
 
 
 # ============================================================
@@ -76,13 +154,13 @@ def health_check():
     return jsonify({
         "service": "Kapture Finance - Maya Collections API",
         "status": "online",
-        "version": "1.0",
+        "version": "1.1",
         "timestamp": utc_now(),
     })
 
 
 # ============================================================
-# TOOL 1 — VERIFY CUSTOMER
+# TOOL 1 - VERIFY CUSTOMER
 # ============================================================
 
 @app.route("/verify-customer", methods=["POST"])
@@ -128,9 +206,16 @@ def verify_customer():
         })
 
     # Mock verification
+    #
+    # CUS-1001 -> expected verification value = 1001
+    # CUS-PAID-001 -> expected verification value = 001
     expected_value = customer_reference.split("-")[-1]
 
-    if str(verification_value) != str(expected_value):
+    if str(verification_value).strip() != str(expected_value).strip():
+
+        customer["verified"] = False
+
+        print("VERIFICATION FAILED:", customer_reference)
 
         return jsonify({
             "success": True,
@@ -138,8 +223,10 @@ def verify_customer():
             "reason": "VERIFICATION_FAILED",
         })
 
-    # Only after successful verification
-    # return account information.
+    # Successful verification
+    customer["verified"] = True
+
+    print("CUSTOMER VERIFIED:", customer_reference)
 
     return jsonify({
         "success": True,
@@ -154,7 +241,7 @@ def verify_customer():
 
 
 # ============================================================
-# TOOL 2 — GET ACCOUNT DETAILS
+# TOOL 2 - GET ACCOUNT DETAILS
 # ============================================================
 
 @app.route("/get-account-details", methods=["POST"])
@@ -183,14 +270,24 @@ def get_account_details():
             "error": "CUSTOMER_NOT_FOUND",
         }), 404
 
-    # Do not expose account details for DNC customers
+    # DNC protection
     if customer["do_not_call"]:
 
         return jsonify({
             "success": False,
             "error": "CUSTOMER_BLOCKED",
             "reason": "DO_NOT_CALL",
-        })
+        }), 403
+
+    # Verification guardrail
+    if not is_verified(customer):
+
+        print(
+            "SECURITY BLOCK: Account details requested "
+            "before customer verification."
+        )
+
+        return authentication_required()
 
     return jsonify({
         "success": True,
@@ -204,7 +301,7 @@ def get_account_details():
 
 
 # ============================================================
-# TOOL 3 — LOG PROMISE TO PAY
+# TOOL 3 - LOG PROMISE TO PAY
 # ============================================================
 
 @app.route("/log-promise-to-pay", methods=["POST"])
@@ -213,16 +310,35 @@ def log_promise_to_pay():
     data = request.get_json(silent=True) or {}
 
     customer_reference = data.get("customer_reference")
-    amount = data.get("amount")
-    payment_date = data.get("payment_date")
+
+    # Accept both NEW and OLD schema names.
+    #
+    # Preferred:
+    #   amount
+    #   payment_date
+    #
+    # Fallback:
+    #   ptp_amount
+    #   ptp_date
+
+    amount = extract_parameter(
+        data,
+        "amount",
+        "ptp_amount"
+    )
+
+    payment_date = extract_parameter(
+        data,
+        "payment_date",
+        "ptp_date"
+    )
 
     print("\n================ LOG PTP ================")
     print("Customer:", customer_reference)
-    print("Amount:", amount)
+    print("Raw Amount:", amount)
     print("Payment Date:", payment_date)
 
-    # Required fields
-
+    # Required customer reference
     if not customer_reference:
 
         return jsonify({
@@ -230,22 +346,7 @@ def log_promise_to_pay():
             "error": "customer_reference is required",
         }), 400
 
-    if amount is None:
-
-        return jsonify({
-            "success": False,
-            "error": "amount is required",
-        }), 400
-
-    if not payment_date:
-
-        return jsonify({
-            "success": False,
-            "error": "payment_date is required",
-        }), 400
-
     # Validate customer
-
     customer = CUSTOMERS.get(customer_reference)
 
     if not customer:
@@ -255,39 +356,95 @@ def log_promise_to_pay():
             "error": "CUSTOMER_NOT_FOUND",
         }), 404
 
-    # Validate amount
-
-    try:
-        amount = int(amount)
-
-    except (ValueError, TypeError):
+    # DNC protection
+    if customer["do_not_call"]:
 
         return jsonify({
             "success": False,
-            "error": "amount must be a number",
+            "error": "CUSTOMER_BLOCKED",
+            "reason": "DO_NOT_CALL",
+        }), 403
+
+    # Verification guardrail
+    if not is_verified(customer):
+
+        print(
+            "SECURITY BLOCK: PTP requested "
+            "before customer verification."
+        )
+
+        return authentication_required()
+
+    # Amount required
+    if amount is None:
+
+        print("PTP ERROR: amount is missing")
+
+        return jsonify({
+            "success": False,
+            "error": "amount is required",
+            "expected_fields": [
+                "customer_reference",
+                "amount",
+                "payment_date"
+            ],
         }), 400
 
-    if amount <= 0:
+    # Payment date required
+    if not payment_date:
+
+        print("PTP ERROR: payment_date is missing")
+
+        return jsonify({
+            "success": False,
+            "error": "payment_date is required",
+            "expected_fields": [
+                "customer_reference",
+                "amount",
+                "payment_date"
+            ],
+        }), 400
+
+    # Normalize amount
+    normalized_amount = normalize_amount(amount)
+
+    if normalized_amount is None:
+
+        return jsonify({
+            "success": False,
+            "error": "amount must be a positive number",
+        }), 400
+
+    if normalized_amount <= 0:
 
         return jsonify({
             "success": False,
             "error": "amount must be greater than zero",
         }), 400
 
-    # Create record
+    # Prevent commitment above overdue amount
+    if normalized_amount > customer["overdue_amount"]:
 
+        return jsonify({
+            "success": False,
+            "error": "amount exceeds current overdue amount",
+            "overdue_amount": customer["overdue_amount"],
+        }), 400
+
+    # Create PTP record
     record = {
         "customer_reference": customer_reference,
         "customer_name": customer["customer_name"],
-        "amount": amount,
-        "payment_date": payment_date,
+        "amount": normalized_amount,
+        "payment_date": str(payment_date),
         "created_at": utc_now(),
         "status": "PROMISED",
     }
 
     PTP_RECORDS.append(record)
 
-    print("PTP CREATED:", record)
+    print("PTP CREATED SUCCESSFULLY:")
+    print(record)
 
     return jsonify({
         "success": True,
@@ -297,7 +454,7 @@ def log_promise_to_pay():
 
 
 # ============================================================
-# TOOL 4 — SEND PAYMENT LINK
+# TOOL 4 - SEND PAYMENT LINK
 # ============================================================
 
 @app.route("/send-payment-link", methods=["POST"])
@@ -328,16 +485,37 @@ def send_payment_link():
             "error": "CUSTOMER_NOT_FOUND",
         }), 404
 
+    # DNC protection
     if customer["do_not_call"]:
 
         return jsonify({
             "success": False,
             "error": "CUSTOMER_BLOCKED",
             "reason": "DO_NOT_CALL",
-        })
+        }), 403
 
-    # Mock payment link
+    # Verification guardrail
+    if not is_verified(customer):
 
+        print(
+            "SECURITY BLOCK: Payment link requested "
+            "before customer verification."
+        )
+
+        return authentication_required()
+
+    # Validate channel
+    channel = str(channel).upper().strip()
+
+    if channel not in ["SMS", "WHATSAPP"]:
+
+        return jsonify({
+            "success": False,
+            "error": "INVALID_CHANNEL",
+            "message": "Channel must be SMS or WHATSAPP.",
+        }), 400
+
+    # Generate mock payment link
     payment_link = (
         "https://pay.kapture-finance.demo/"
         + customer_reference.lower()
@@ -363,7 +541,7 @@ def send_payment_link():
 
 
 # ============================================================
-# TOOL 5 — ESCALATE TO HUMAN
+# TOOL 5 - ESCALATE TO HUMAN
 # ============================================================
 
 @app.route("/escalate-to-agent", methods=["POST"])
@@ -372,7 +550,11 @@ def escalate_to_agent():
     data = request.get_json(silent=True) or {}
 
     customer_reference = data.get("customer_reference")
-    reason = data.get("reason")
+
+    reason = data.get(
+        "reason",
+        "Customer requested human assistance"
+    )
 
     print("\n================ ESCALATE ================")
     print("Customer:", customer_reference)
@@ -400,7 +582,7 @@ def escalate_to_agent():
 
 
 # ============================================================
-# TOOL 6 — MARK DISPOSITION
+# TOOL 6 - MARK DISPOSITION
 # ============================================================
 
 @app.route("/mark-disposition", methods=["POST"])
@@ -411,6 +593,11 @@ def mark_disposition():
     customer_reference = data.get("customer_reference")
     disposition = data.get("disposition")
     notes = data.get("notes", "")
+
+    print("\n================ DISPOSITION ================")
+    print("Customer:", customer_reference)
+    print("Disposition:", disposition)
+    print("Notes:", notes)
 
     if not customer_reference:
 
@@ -435,7 +622,6 @@ def mark_disposition():
 
     DISPOSITIONS.append(record)
 
-    print("\n================ DISPOSITION ================")
     print(record)
 
     return jsonify({
@@ -446,7 +632,7 @@ def mark_disposition():
 
 
 # ============================================================
-# VAPI TOOL WEBHOOK — STEP 6A
+# VAPI TOOL WEBHOOK
 # ============================================================
 
 @app.route("/vapi/tools", methods=["POST"])
@@ -458,18 +644,25 @@ def vapi_tools():
     print("=" * 70)
     print("VAPI TOOL REQUEST")
     print("=" * 70)
-    print(data)
+    print(json.dumps(data, indent=2, default=str))
 
     message = data.get("message", {})
 
-    # Vapi sends tool calls inside message.toolCallList
+    # Vapi normally sends multiple tool calls here.
     tool_calls = message.get("toolCallList", [])
 
-    # Some Vapi payloads may provide a single tool call.
+    # Some payloads can contain one tool call.
     if not tool_calls and message.get("toolCall"):
-        tool_calls = [message.get("toolCall")]
+
+        tool_calls = [
+            message.get("toolCall")
+        ]
 
     results = []
+
+    # ========================================================
+    # PROCESS EACH TOOL CALL
+    # ========================================================
 
     for tool_call in tool_calls:
 
@@ -482,26 +675,36 @@ def vapi_tools():
 
         function_name = function_data.get("name")
 
-        parameters = function_data.get("arguments", {})
+        parameters = function_data.get(
+            "arguments",
+            {}
+        )
 
-        # Sometimes arguments arrive as a JSON string.
+        # Arguments can arrive as JSON string.
         if isinstance(parameters, str):
-
-            import json
 
             try:
                 parameters = json.loads(parameters)
 
             except json.JSONDecodeError:
 
+                print(
+                    "WARNING: Could not parse tool arguments:"
+                )
+
+                print(parameters)
+
                 parameters = {}
 
         if not isinstance(parameters, dict):
+
             parameters = {}
 
-        print("\nTool:", function_name)
+        print("\n------------------------------------------")
+        print("Tool:", function_name)
         print("Tool Call ID:", tool_call_id)
         print("Parameters:", parameters)
+        print("------------------------------------------")
 
         # ====================================================
         # VERIFY CUSTOMER
@@ -517,7 +720,9 @@ def vapi_tools():
                 "verification_value"
             )
 
-            customer = CUSTOMERS.get(customer_reference)
+            customer = CUSTOMERS.get(
+                customer_reference
+            )
 
             if not customer:
 
@@ -538,9 +743,16 @@ def vapi_tools():
 
             else:
 
-                expected_value = customer_reference.split("-")[-1]
+                expected_value = (
+                    customer_reference.split("-")[-1]
+                )
 
-                if str(verification_value) != str(expected_value):
+                if (
+                    str(verification_value).strip()
+                    != str(expected_value).strip()
+                ):
+
+                    customer["verified"] = False
 
                     result = {
                         "success": True,
@@ -549,6 +761,8 @@ def vapi_tools():
                     }
 
                 else:
+
+                    customer["verified"] = True
 
                     result = {
                         "success": True,
@@ -576,7 +790,9 @@ def vapi_tools():
                 "customer_reference"
             )
 
-            customer = CUSTOMERS.get(customer_reference)
+            customer = CUSTOMERS.get(
+                customer_reference
+            )
 
             if not customer:
 
@@ -591,6 +807,14 @@ def vapi_tools():
                     "success": False,
                     "error": "CUSTOMER_BLOCKED",
                     "reason": "DO_NOT_CALL",
+                }
+
+            elif not is_verified(customer):
+
+                result = {
+                    "success": False,
+                    "error": "AUTHENTICATION_REQUIRED",
+                    "reason": "CUSTOMER_NOT_VERIFIED",
                 }
 
             else:
@@ -620,13 +844,26 @@ def vapi_tools():
                 "customer_reference"
             )
 
-            amount = parameters.get("amount")
-
-            payment_date = parameters.get(
-                "payment_date"
+            amount = extract_parameter(
+                parameters,
+                "amount",
+                "ptp_amount"
             )
 
-            customer = CUSTOMERS.get(customer_reference)
+            payment_date = extract_parameter(
+                parameters,
+                "payment_date",
+                "ptp_date"
+            )
+
+            print("\nPTP TOOL PARAMETERS:")
+            print("customer_reference =", customer_reference)
+            print("amount =", amount)
+            print("payment_date =", payment_date)
+
+            customer = CUSTOMERS.get(
+                customer_reference
+            )
 
             if not customer:
 
@@ -635,11 +872,32 @@ def vapi_tools():
                     "error": "CUSTOMER_NOT_FOUND",
                 }
 
+            elif customer["do_not_call"]:
+
+                result = {
+                    "success": False,
+                    "error": "CUSTOMER_BLOCKED",
+                    "reason": "DO_NOT_CALL",
+                }
+
+            elif not is_verified(customer):
+
+                result = {
+                    "success": False,
+                    "error": "AUTHENTICATION_REQUIRED",
+                    "reason": "CUSTOMER_NOT_VERIFIED",
+                }
+
             elif amount is None:
 
                 result = {
                     "success": False,
                     "error": "amount is required",
+                    "expected_fields": [
+                        "customer_reference",
+                        "amount",
+                        "payment_date"
+                    ],
                 }
 
             elif not payment_date:
@@ -647,38 +905,77 @@ def vapi_tools():
                 result = {
                     "success": False,
                     "error": "payment_date is required",
+                    "expected_fields": [
+                        "customer_reference",
+                        "amount",
+                        "payment_date"
+                    ],
                 }
 
             else:
 
-                try:
-                    amount = int(amount)
+                normalized_amount = normalize_amount(
+                    amount
+                )
 
-                    if amount <= 0:
-                        raise ValueError
+                if normalized_amount is None:
+
+                    result = {
+                        "success": False,
+                        "error": (
+                            "amount must be a "
+                            "positive number"
+                        ),
+                    }
+
+                elif normalized_amount <= 0:
+
+                    result = {
+                        "success": False,
+                        "error": (
+                            "amount must be greater "
+                            "than zero"
+                        ),
+                    }
+
+                elif normalized_amount > customer["overdue_amount"]:
+
+                    result = {
+                        "success": False,
+                        "error": (
+                            "amount exceeds current "
+                            "overdue amount"
+                        ),
+                        "overdue_amount": (
+                            customer["overdue_amount"]
+                        ),
+                    }
+
+                else:
 
                     record = {
                         "customer_reference": customer_reference,
                         "customer_name": customer["customer_name"],
-                        "amount": amount,
-                        "payment_date": payment_date,
+                        "amount": normalized_amount,
+                        "payment_date": str(payment_date),
                         "created_at": utc_now(),
                         "status": "PROMISED",
                     }
 
                     PTP_RECORDS.append(record)
 
+                    print(
+                        "PTP CREATED THROUGH VAPI:"
+                    )
+                    print(record)
+
                     result = {
                         "success": True,
-                        "message": "Promise to pay recorded successfully",
+                        "message": (
+                            "Promise to pay recorded "
+                            "successfully"
+                        ),
                         "ptp": record,
-                    }
-
-                except (ValueError, TypeError):
-
-                    result = {
-                        "success": False,
-                        "error": "amount must be a positive number",
                     }
 
             results.append({
@@ -701,7 +998,9 @@ def vapi_tools():
                 "SMS"
             )
 
-            customer = CUSTOMERS.get(customer_reference)
+            customer = CUSTOMERS.get(
+                customer_reference
+            )
 
             if not customer:
 
@@ -718,30 +1017,59 @@ def vapi_tools():
                     "reason": "DO_NOT_CALL",
                 }
 
-            else:
-
-                payment_link = (
-                    "https://pay.kapture-finance.demo/"
-                    + customer_reference.lower()
-                )
-
-                record = {
-                    "customer_reference": customer_reference,
-                    "channel": channel,
-                    "payment_link": payment_link,
-                    "created_at": utc_now(),
-                }
-
-                PAYMENT_LINKS.append(record)
+            elif not is_verified(customer):
 
                 result = {
-                    "success": True,
-                    "message": (
-                        f"Payment link prepared for {channel}"
-                    ),
-                    "channel": channel,
-                    "payment_link": payment_link,
+                    "success": False,
+                    "error": "AUTHENTICATION_REQUIRED",
+                    "reason": "CUSTOMER_NOT_VERIFIED",
                 }
+
+            else:
+
+                channel = str(
+                    channel
+                ).upper().strip()
+
+                if channel not in [
+                    "SMS",
+                    "WHATSAPP"
+                ]:
+
+                    result = {
+                        "success": False,
+                        "error": "INVALID_CHANNEL",
+                        "message": (
+                            "Channel must be "
+                            "SMS or WHATSAPP."
+                        ),
+                    }
+
+                else:
+
+                    payment_link = (
+                        "https://pay.kapture-finance.demo/"
+                        + customer_reference.lower()
+                    )
+
+                    record = {
+                        "customer_reference": customer_reference,
+                        "channel": channel,
+                        "payment_link": payment_link,
+                        "created_at": utc_now(),
+                    }
+
+                    PAYMENT_LINKS.append(record)
+
+                    result = {
+                        "success": True,
+                        "message": (
+                            f"Payment link prepared "
+                            f"for {channel}"
+                        ),
+                        "channel": channel,
+                        "payment_link": payment_link,
+                    }
 
             results.append({
                 "toolCallId": tool_call_id,
@@ -778,8 +1106,8 @@ def vapi_tools():
                 "queue": "COLLECTIONS_SPECIALIST",
                 "reason": reason,
                 "message": (
-                    "Customer has been routed to a human "
-                    "collections specialist."
+                    "Customer has been routed to a "
+                    "human collections specialist."
                 ),
             }
 
@@ -811,14 +1139,20 @@ def vapi_tools():
 
                 result = {
                     "success": False,
-                    "error": "customer_reference is required",
+                    "error": (
+                        "customer_reference "
+                        "is required"
+                    ),
                 }
 
             elif not disposition:
 
                 result = {
                     "success": False,
-                    "error": "disposition is required",
+                    "error": (
+                        "disposition "
+                        "is required"
+                    ),
                 }
 
             else:
@@ -834,7 +1168,9 @@ def vapi_tools():
 
                 result = {
                     "success": True,
-                    "message": "Call disposition recorded",
+                    "message": (
+                        "Call disposition recorded"
+                    ),
                     "disposition": record,
                 }
 
@@ -849,18 +1185,35 @@ def vapi_tools():
 
         else:
 
+            print(
+                "UNKNOWN TOOL:",
+                function_name
+            )
+
             results.append({
                 "toolCallId": tool_call_id,
                 "result": {
                     "success": False,
                     "error": (
-                        f"Unknown tool: {function_name}"
+                        f"Unknown tool: "
+                        f"{function_name}"
                     ),
                 },
             })
 
-    print("\nVAPI TOOL RESPONSE")
-    print(results)
+    # ========================================================
+    # VAPI RESPONSE
+    # ========================================================
+
+    print("\n================ VAPI TOOL RESPONSE ================")
+
+    print(
+        json.dumps(
+            results,
+            indent=2,
+            default=str
+        )
+    )
 
     return jsonify({
         "results": results
@@ -883,8 +1236,29 @@ def debug_data():
 
 
 # ============================================================
+# RESET DEMO DATA
+# ============================================================
+
+@app.route("/debug/reset", methods=["POST"])
+def reset_demo_data():
+
+    PTP_RECORDS.clear()
+    PAYMENT_LINKS.clear()
+    DISPOSITIONS.clear()
+    ESCALATIONS.clear()
+
+    # Reset verification status
+    for customer in CUSTOMERS.values():
+        customer["verified"] = False
+
+    return jsonify({
+        "success": True,
+        "message": "Demo data and verification state reset.",
+    })
+
+
+# ============================================================
 # START SERVER
-# IMPORTANT: THIS MUST BE AT THE VERY END
 # ============================================================
 
 if __name__ == "__main__":
@@ -893,15 +1267,47 @@ if __name__ == "__main__":
     print(" KAPTURE FINANCE - MAYA API SERVER")
     print("==============================================")
     print("Server starting...")
-    print("Health:              http://127.0.0.1:5000/")
-    print("Verify Customer:     POST /verify-customer")
-    print("Account Details:     POST /get-account-details")
-    print("Log PTP:             POST /log-promise-to-pay")
-    print("Payment Link:        POST /send-payment-link")
-    print("Escalation:          POST /escalate-to-agent")
-    print("Disposition:         POST /mark-disposition")
-    print("VAPI Tools:          POST /vapi/tools")
-    print("Debug Data:          GET  /debug/data")
+    print()
+
+    print("Health:")
+    print("http://127.0.0.1:5000/")
+    print()
+
+    print("Verify Customer:")
+    print("POST /verify-customer")
+    print()
+
+    print("Account Details:")
+    print("POST /get-account-details")
+    print()
+
+    print("Log PTP:")
+    print("POST /log-promise-to-pay")
+    print()
+
+    print("Payment Link:")
+    print("POST /send-payment-link")
+    print()
+
+    print("Escalation:")
+    print("POST /escalate-to-agent")
+    print()
+
+    print("Disposition:")
+    print("POST /mark-disposition")
+    print()
+
+    print("VAPI Tools:")
+    print("POST /vapi/tools")
+    print()
+
+    print("Debug Data:")
+    print("GET /debug/data")
+    print()
+
+    print("Reset Demo:")
+    print("POST /debug/reset")
+
     print("==============================================\n")
 
     app.run(
